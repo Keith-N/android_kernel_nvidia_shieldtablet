@@ -2909,6 +2909,8 @@ static int ov5693_get_fuse_id(struct ov5693_info *info)
 {
 	/* fuse stored at ov5693 bank 0 */
 	int err;
+	/* delay to ensure i2c is ready after poweron */
+	usleep_range(150, 200);
 	err = regmap_write(info->regmap, 0x0100, 0x01);
 	if (err != 0) {
 		dev_err(&info->i2c_client->dev,
@@ -3523,8 +3525,6 @@ static int ov5693_probe(
 	if (IS_ERR(info->regulators.avdd) || IS_ERR(info->regulators.dovdd))
 			return -EFAULT;
 
-	info->sysedpc = sysedp_create_consumer("ov5693", "ov5693");
-
 	ov5693_sdata_init(info);
 	if (info->pdata->cfg & (NVC_CFG_NODEV | NVC_CFG_BOOT_INIT)) {
 		if (info->pdata->probe_clock) {
@@ -3556,6 +3556,8 @@ static int ov5693_probe(
 		ov5693_del(info);
 		return -ENODEV;
 	}
+
+	info->sysedpc = sysedp_create_consumer("ov5693", info->devname);
 
 	dev_dbg(&client->dev, "ov5693 sensor driver loading done\n");
 	return 0;

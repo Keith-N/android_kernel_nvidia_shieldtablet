@@ -7732,6 +7732,9 @@ wl_bss_connect_done(struct wl_priv *wl, struct net_device *ndev,
 				INIT_COMPLETION(wl->iface_disable);
 			}
 		}
+		/* Update the cfg layer with the lates active channels available */
+		wl_update_wiphybands(NULL, true);
+
 		cfg80211_connect_result(ndev,
 			curbssid,
 			conn_info->req_ie,
@@ -8742,7 +8745,7 @@ wl_cfg80211_netdev_notifier_call(struct notifier_block * nb,
 
 		case NETDEV_UNREGISTER:
 			/* after calling list_del_rcu(&wdev->list) */
-			wl_dealloc_netinfo(wl, ndev);
+			wl_remove_netinfo(wl, ndev);
 			break;
 		case NETDEV_GOING_DOWN:
 			/* At NETDEV_DOWN state, wdev_cleanup_work work will be called.
@@ -9273,6 +9276,8 @@ static s32 wl_notifier_change_state(struct wl_priv *wl, struct net_info *_net_in
 
 			}
 			for_each_ndev(wl, iter, next) {
+				if (!wl_get_drv_status(wl, CONNECTED, iter->ndev))
+					continue;
 				if ((err = wldev_ioctl(iter->ndev, WLC_SET_PM, &pm,
 					sizeof(pm), true)) != 0) {
 					if (err == -ENODEV)
@@ -9293,8 +9298,25 @@ static s32 wl_notifier_change_state(struct wl_priv *wl, struct net_info *_net_in
 			 * before calling pm_enable_timer, we need to set PM -1 for all ndev
 			 */
 			pm = PM_OFF;
+			if (!_net_info->pm_block) {
+				for_each_ndev(wl, iter, next) {
+					if (iter->pm_restore)
+						continue;
+					/* Save the current power mode */
+					err = wldev_ioctl(iter->ndev, WLC_GET_PM, &iter->pm,
+							sizeof(iter->pm), false);
+					WL_DBG(("%s:power save %s\n", iter->ndev->name,
+								iter->pm ? "enabled" : "disabled"));
+					if (!err && iter->pm) {
+						iter->pm_restore = true;
+					}
+
+				}
+			}
 
 			for_each_ndev(wl, iter, next) {
+				if (!wl_get_drv_status(wl, CONNECTED, iter->ndev))
+					continue;
 				if ((err = wldev_ioctl(iter->ndev, WLC_SET_PM, &pm,
 					sizeof(pm), true)) != 0) {
 					if (err == -ENODEV)
@@ -9372,6 +9394,23 @@ static s32 wl_init_scan(struct wl_priv *wl)
 	return err;
 }
 
+static void wl_dealloc_netinfo(struct work_struct *work)
+{
+	struct net_info *_net_info, *next;
+	struct wl_priv *wl = container_of(work, struct wl_priv, dealloc_work);
+
+	list_for_each_entry_safe(_net_info, next, &wl->dealloc_list, list) {
+		list_del(&_net_info->list);
+		if (_net_info->wdev) {
+			flush_work(&_net_info->wdev->cleanup_work);
+			WARN_ON(work_pending(&_net_info->wdev->cleanup_work));
+			kfree(_net_info->wdev);
+		}
+		kfree(_net_info);
+	}
+
+}
+
 static s32 wl_init_priv(struct wl_priv *wl)
 {
 	struct wiphy *wiphy = wl_to_wiphy(wl);
@@ -9412,6 +9451,8 @@ static s32 wl_init_priv(struct wl_priv *wl)
 	wl_init_prof(wl, ndev);
 	wl_link_down(wl);
 	DNGL_FUNC(dhd_cfg80211_init, (wl));
+	INIT_LIST_HEAD(&wl->dealloc_list);
+	INIT_WORK(&wl->dealloc_work, wl_dealloc_netinfo);
 
 	return err;
 }
